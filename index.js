@@ -11,6 +11,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// Nivoda credentials + endpoint
 const NIVODA_ENDPOINT =
   process.env.NIVODA_ENDPOINT ||
   "https://intg-customer-staging.nivodaapi.net/api/diamonds";
@@ -18,14 +19,7 @@ const NIVODA_ENDPOINT =
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
 
-const AUTH_QUERY = `
-  query {
-    authenticate {
-      token
-    }
-  }
-`;
-
+// GraphQL query using DiamondQuery + diamonds_by_query
 const DIAMOND_QUERY = `
   query DiamondsByQuery($offset: Int, $limit: Int, $query: DiamondQuery) {
     diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
@@ -46,12 +40,13 @@ const DIAMOND_QUERY = `
   }
 `;
 
-async function getAuthToken() {
+// Utility to call Nivoda with Basic auth
+async function callNivoda(query, variables) {
   if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
     throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
   }
 
-  const basicAuth =
+  const authHeader =
     "Basic " +
     Buffer.from(`${NIVODA_USERNAME}:${NIVODA_PASSWORD}`).toString("base64");
 
@@ -60,36 +55,7 @@ async function getAuthToken() {
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      Authorization: basicAuth
-    },
-    body: JSON.stringify({ query: AUTH_QUERY })
-  });
-
-  const json = await resp.json().catch(() => ({}));
-
-  if (!resp.ok || json.errors) {
-    console.error("Nivoda auth error:", resp.status, JSON.stringify(json));
-    throw new Error(
-      `Nivoda auth error: ${resp.status} ${
-        json.errors ? JSON.stringify(json.errors) : ""
-      }`
-    );
-  }
-
-  const token = json?.data?.authenticate?.token;
-  if (!token) throw new Error("No token returned from authenticate");
-  return token;
-}
-
-async function callNivodaWithToken(query, variables) {
-  const token = await getAuthToken();
-
-  const resp = await fetch(NIVODA_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`
+      Authorization: authHeader
     },
     body: JSON.stringify({ query, variables })
   });
@@ -97,9 +63,9 @@ async function callNivodaWithToken(query, variables) {
   const json = await resp.json().catch(() => ({}));
 
   if (!resp.ok || json.errors) {
-    console.error("Nivoda query error:", resp.status, JSON.stringify(json));
+    console.error("Nivoda error:", resp.status, JSON.stringify(json));
     throw new Error(
-      `Nivoda query error: ${resp.status} ${
+      `Nivoda error: ${resp.status} ${
         json.errors ? JSON.stringify(json.errors) : ""
       }`
     );
@@ -108,6 +74,7 @@ async function callNivodaWithToken(query, variables) {
   return json.data;
 }
 
+// POST /diamonds – used by Shopify JS
 app.post("/diamonds", async (req, res) => {
   try {
     const { shape, carat, limit } = req.body || {};
@@ -138,14 +105,14 @@ app.post("/diamonds", async (req, res) => {
       query
     };
 
-    const data = await callNivodaWithToken(DIAMOND_QUERY, variables);
+    const data = await callNivoda(DIAMOND_QUERY, variables);
 
     const result = data && data.diamonds_by_query;
     const rawItems = Array.isArray(result?.items) ? result.items : [];
 
     const items = rawItems.map((d) => ({
       id: d.id,
-      priceCents: null, // TODO: map correct price field once confirmed from schema
+      priceCents: null, // TODO: wire up the actual price field once confirmed
       image: d.image || null,
       certificate: d.certificate || {}
     }));
@@ -160,6 +127,7 @@ app.post("/diamonds", async (req, res) => {
   }
 });
 
+// POST /checkout – currently just sends them to the cart with the base variant
 app.post("/checkout", async (req, res) => {
   try {
     const { baseVariantId } = req.body || {};
