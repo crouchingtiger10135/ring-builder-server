@@ -74,7 +74,7 @@ async function callNivoda(query, variables) {
   return json.data;
 }
 
-// POST /diamonds – used by Shopify JS
+// POST /diamonds – called from Shopify JS
 app.post("/diamonds", async (req, res) => {
   try {
     const { shape, carat, limit } = req.body || {};
@@ -86,10 +86,12 @@ app.post("/diamonds", async (req, res) => {
 
     const query = {};
 
+    // shape → DiamondQuery.shapes
     if (shape) {
       query.shapes = [shape];
     }
 
+    // carat range → DiamondQuery.sizes: [FloatRange]
     if (cMin !== null || cMax !== null) {
       query.sizes = [
         {
@@ -112,7 +114,8 @@ app.post("/diamonds", async (req, res) => {
 
     const items = rawItems.map((d) => ({
       id: d.id,
-      priceCents: null, // TODO: wire up the actual price field once confirmed
+      // TODO: once you confirm the price field from GraphiQL, map it here
+      priceCents: null,
       image: d.image || null,
       certificate: d.certificate || {}
     }));
@@ -127,7 +130,7 @@ app.post("/diamonds", async (req, res) => {
   }
 });
 
-// POST /checkout – currently just sends them to the cart with the base variant
+// POST /checkout – currently just sends them to cart with base variant
 app.post("/checkout", async (req, res) => {
   try {
     const { baseVariantId } = req.body || {};
