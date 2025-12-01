@@ -2,7 +2,6 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-const fetch = require("node-fetch");
 
 const app = express();
 
@@ -86,12 +85,10 @@ app.post("/diamonds", async (req, res) => {
 
     const query = {};
 
-    // shape → DiamondQuery.shapes
     if (shape) {
       query.shapes = [shape];
     }
 
-    // carat range → DiamondQuery.sizes: [FloatRange]
     if (cMin !== null || cMax !== null) {
       query.sizes = [
         {
@@ -114,7 +111,7 @@ app.post("/diamonds", async (req, res) => {
 
     const items = rawItems.map((d) => ({
       id: d.id,
-      // TODO: once you confirm the price field from GraphiQL, map it here
+      // TODO: map the actual price field once we know its name
       priceCents: null,
       image: d.image || null,
       certificate: d.certificate || {}
