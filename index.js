@@ -18,13 +18,20 @@ const NIVODA_ENDPOINT =
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
 
+const AUTH_QUERY = `
+  query {
+    authenticate {
+      token
+    }
+  }
+`;
+
 const DIAMOND_QUERY = `
-  query Diamonds($query: DiamondQuery) {
-    diamonds(query: $query) {
+  query DiamondsByQuery($offset: Int, $limit: Int, $query: DiamondQuery) {
+    diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
       total
       items {
         id
-        final_price
         image
         certificate {
           carats
@@ -39,12 +46,12 @@ const DIAMOND_QUERY = `
   }
 `;
 
-async function callNivoda(query, variables) {
+async function getAuthToken() {
   if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
     throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
   }
 
-  const authHeader =
+  const basicAuth =
     "Basic " +
     Buffer.from(`${NIVODA_USERNAME}:${NIVODA_PASSWORD}`).toString("base64");
 
@@ -53,7 +60,36 @@ async function callNivoda(query, variables) {
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      Authorization: authHeader
+      Authorization: basicAuth
+    },
+    body: JSON.stringify({ query: AUTH_QUERY })
+  });
+
+  const json = await resp.json().catch(() => ({}));
+
+  if (!resp.ok || json.errors) {
+    console.error("Nivoda auth error:", resp.status, JSON.stringify(json));
+    throw new Error(
+      `Nivoda auth error: ${resp.status} ${
+        json.errors ? JSON.stringify(json.errors) : ""
+      }`
+    );
+  }
+
+  const token = json?.data?.authenticate?.token;
+  if (!token) throw new Error("No token returned from authenticate");
+  return token;
+}
+
+async function callNivodaWithToken(query, variables) {
+  const token = await getAuthToken();
+
+  const resp = await fetch(NIVODA_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`
     },
     body: JSON.stringify({ query, variables })
   });
@@ -61,9 +97,9 @@ async function callNivoda(query, variables) {
   const json = await resp.json().catch(() => ({}));
 
   if (!resp.ok || json.errors) {
-    console.error("Nivoda error:", resp.status, JSON.stringify(json));
+    console.error("Nivoda query error:", resp.status, JSON.stringify(json));
     throw new Error(
-      `Nivoda error: ${resp.status} ${
+      `Nivoda query error: ${resp.status} ${
         json.errors ? JSON.stringify(json.errors) : ""
       }`
     );
@@ -74,7 +110,7 @@ async function callNivoda(query, variables) {
 
 app.post("/diamonds", async (req, res) => {
   try {
-    const { shape, carat, sort, limit } = req.body || {};
+    const { shape, carat, limit } = req.body || {};
 
     const cMin =
       carat && typeof carat.min === "number" ? Number(carat.min) : null;
@@ -97,30 +133,22 @@ app.post("/diamonds", async (req, res) => {
     }
 
     const variables = {
+      offset: 0,
+      limit: limit || 24,
       query
     };
 
-    const data = await callNivoda(DIAMOND_QUERY, variables);
+    const data = await callNivodaWithToken(DIAMOND_QUERY, variables);
 
-    const result = data && (data.diamonds || {});
-    const rawItems = Array.isArray(result.items) ? result.items : [];
+    const result = data && data.diamonds_by_query;
+    const rawItems = Array.isArray(result?.items) ? result.items : [];
 
-    const items = rawItems.map((d) => {
-      const priceRaw = d.final_price;
-      const priceCents =
-        typeof priceRaw === "number"
-          ? Math.round(priceRaw * 100)
-          : priceRaw
-          ? Math.round(Number(priceRaw) * 100)
-          : null;
-
-      return {
-        id: d.id,
-        priceCents,
-        image: d.image || null,
-        certificate: d.certificate || {}
-      };
-    });
+    const items = rawItems.map((d) => ({
+      id: d.id,
+      priceCents: null, // TODO: map correct price field once confirmed from schema
+      image: d.image || null,
+      certificate: d.certificate || {}
+    }));
 
     const total =
       result && typeof result.total === "number" ? result.total : items.length;
