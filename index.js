@@ -1,198 +1,158 @@
 require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const fetch = require("node-fetch");
 
 const app = express();
-app.use(express.json());
+
 app.use(cors());
+app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Nivoda config (set these in Railway env)
-const NIVODA_GRAPHQL_URL =
-  process.env.NIVODA_GRAPHQL_URL ||
+// Nivoda credentials + endpoint
+const NIVODA_ENDPOINT =
+  process.env.NIVODA_ENDPOINT ||
   "https://intg-customer-staging.nivodaapi.net/api/diamonds";
 
-const NIVODA_USER = process.env.NIVODA_USER || "testaccount@sample.com";
-const NIVODA_PASS = process.env.NIVODA_PASS || "staging-nivoda-22";
+const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
+const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
 
-function nivodaAuthHeader() {
-  const token = Buffer.from(`${NIVODA_USER}:${NIVODA_PASS}`).toString("base64");
-  return `Basic ${token}`;
-}
-
-const DIAMOND_SEARCH_QUERY = `
-  query Diamonds($filters: DiamondSearchInput, $sort: DiamondSortInput, $first: Int) {
-    diamonds(filters: $filters, sort: $sort, first: $first) {
-      totalCount
-      edges {
-        node {
-          id
-          stockId
+// GraphQL query – this is the part that must match Nivoda's schema.
+const DIAMOND_QUERY = `
+  query DiamondSearch($params: DiamondParams) {
+    diamondList(params: $params) {
+      items {
+        id
+        price
+        imageUrl
+        certificate {
+          carats
           shape
           color
           clarity
-          carat
-          price
           cut
-          certificate {
-            certNumber
-          }
-          images {
-            url
-          }
+          certNumber
         }
       }
+      total
     }
   }
 `;
 
-function mapDiamond(node) {
-  const firstImage =
-    node.images && node.images.length ? node.images[0].url : null;
-
-  return {
-    id: node.id || node.stockId,
-    priceCents:
-      typeof node.price === "number" ? Math.round(node.price * 100) : null,
-    certificate: {
-      carats: node.carat,
-      shape: node.shape,
-      color: node.color,
-      clarity: node.clarity,
-      cut: node.cut || null,
-      certNumber: node.certificate && node.certificate.certNumber
-    },
-    imageUrl: firstImage
-  };
-}
-
-function mapSort(sortKey) {
-  switch (sortKey) {
-    case "PRICE_ASC":
-      return { field: "PRICE", direction: "ASC" };
-    case "PRICE_DESC":
-      return { field: "PRICE", direction: "DESC" };
-    case "CARAT_ASC":
-      return { field: "CARAT", direction: "ASC" };
-    case "CARAT_DESC":
-      return { field: "CARAT", direction: "DESC" };
-    case "RELEVANCE":
-    default:
-      return null;
+// Utility to call Nivoda
+async function callNivoda(query, variables) {
+  if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
+    throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
   }
+
+  const authHeader =
+    "Basic " +
+    Buffer.from(`${NIVODA_USERNAME}:${NIVODA_PASSWORD}`).toString("base64");
+
+  const resp = await fetch(NIVODA_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: authHeader
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const json = await resp.json();
+
+  if (!resp.ok || json.errors) {
+    console.error("Nivoda error:", resp.status, JSON.stringify(json));
+    throw new Error(
+      `Nivoda error: ${resp.status} ${
+        json.errors ? JSON.stringify(json.errors) : ""
+      }`
+    );
+  }
+
+  return json.data;
 }
 
+/**
+ * POST /diamonds
+ * Body shape (from Shopify JS):
+ * {
+ *   shape: "Brilliant Round",
+ *   carat: { min: 0.45, max: 0.55 },
+ *   sort: "RELEVANCE" | "PRICE_ASC" | "PRICE_DESC" | "CARAT_DESC",
+ *   limit: 50
+ * }
+ */
 app.post("/diamonds", async (req, res) => {
   try {
     const { shape, carat, sort, limit } = req.body || {};
 
-    const filters = {};
-    if (shape) filters.shape = [shape];
-    if (carat && carat.min && carat.max) {
-      filters.carat = { from: carat.min, to: carat.max };
-    }
-
-    const sortInput = mapSort(sort);
-    const variables = {
-      filters,
-      sort: sortInput,
+    // ⚠️ IMPORTANT:
+    // The structure of `params` MUST match Nivoda's DiamondParams type.
+    // Open the GraphiQL explorer at:
+    //   https://intg-customer-staging.nivodaapi.net/api/diamonds-graphiql
+    // and adjust the fields below (carats, shape, sort, etc.) to match.
+    const params = {
+      // Commonly you'll have fields like:
+      // shapes: [ "ROUND" ] or shape: "ROUND"
+      shape,
+      // or sometimes caratsFrom / caratsTo, or caratFrom / caratTo:
+      caratsFrom: carat?.min ?? null,
+      caratsTo: carat?.max ?? null,
+      // A simple example sort (you may need to adjust name / enum):
+      orderBy: sort || "RELEVANCE",
+      // Limit / pagination:
       first: limit || 50
     };
 
-    const gqlRes = await fetch(NIVODA_GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: nivodaAuthHeader()
-      },
-      body: JSON.stringify({
-        query: DIAMOND_SEARCH_QUERY,
-        variables
-      })
+    const data = await callNivoda(DIAMOND_QUERY, { params });
+
+    // Normalise to { items, total } for the Shopify frontend
+    const list = data?.diamondList || { items: [], total: 0 };
+
+    res.json({
+      items: list.items || [],
+      total: list.total || 0
     });
-
-    if (!gqlRes.ok) {
-      const text = await gqlRes.text();
-      console.error("Nivoda error:", gqlRes.status, text);
-      return res.status(500).json({ error: "Nivoda request failed" });
-    }
-
-    const payload = await gqlRes.json();
-    const edges =
-      payload &&
-      payload.data &&
-      payload.data.diamonds &&
-      payload.data.diamonds.edges
-        ? payload.data.diamonds.edges
-        : [];
-
-    const items = edges.map((edge) => mapDiamond(edge.node));
-    const total =
-      payload &&
-      payload.data &&
-      payload.data.diamonds &&
-      payload.data.diamonds.totalCount
-        ? payload.data.diamonds.totalCount
-        : items.length;
-
-    res.json({ items, total });
   } catch (err) {
-    console.error("Diamonds route error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error in /diamonds:", err.message);
+    res.status(500).json({ error: "Could not load diamonds" });
   }
 });
 
-// Very simple checkout: redirects to cart with product + attributes
-// You can enhance this later with Admin API if needed.
+/**
+ * POST /checkout
+ * Body shape (from Shopify JS):
+ * {
+ *   baseVariantId: "1234567890",
+ *   ringConfig: { ... },
+ *   diamond: { ... }
+ * }
+ *
+ * For now, just send them to the Shopify cart with the selected base variant.
+ * You can extend this later to create a draft order or encode more info.
+ */
 app.post("/checkout", async (req, res) => {
   try {
-    const { baseVariantId, ringConfig, diamond } = req.body || {};
+    const { baseVariantId } = req.body || {};
+
     if (!baseVariantId) {
       return res.status(400).json({ error: "Missing baseVariantId" });
     }
 
-    const storeDomain =
-      process.env.STORE_DOMAIN || "https://simoncurwood.com.au";
-
-    const params = new URLSearchParams();
-    params.append("id", String(baseVariantId));
-    params.append("quantity", "1");
-
-    if (ringConfig) {
-      params.append("properties[Setting style]", ringConfig.settingStyle || "");
-      params.append("properties[Stone shape]", ringConfig.stone || "");
-      params.append("properties[Carat]", ringConfig.carat || "");
-      params.append("properties[Metal]", ringConfig.metal || "");
-      params.append("properties[Ring size]", ringConfig.size || "");
-    }
-
-    if (diamond && diamond.certificate) {
-      const cert = diamond.certificate;
-      if (cert.carats)
-        params.append("properties[Diamond carat]", String(cert.carats));
-      if (cert.shape)
-        params.append("properties[Diamond shape]", String(cert.shape));
-      if (cert.color)
-        params.append("properties[Diamond colour]", String(cert.color));
-      if (cert.clarity)
-        params.append("properties[Diamond clarity]", String(cert.clarity));
-      if (cert.certNumber)
-        params.append("properties[Certificate]", String(cert.certNumber));
-    }
-
-    const url = `${storeDomain}/cart/add?${params.toString()}`;
+    // Simple cart URL: /cart/{variant_id}:1
+    const url = `/cart/${baseVariantId}:1`;
 
     res.json({ url });
   } catch (err) {
-    console.error("Checkout route error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error in /checkout:", err.message);
+    res.status(500).json({ error: "Checkout error" });
   }
 });
 
 app.get("/", (req, res) => {
-  res.send("Ring builder server is running");
+  res.send("Plattar Ring Builder server is running.");
 });
 
 app.listen(PORT, () => {
