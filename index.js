@@ -10,7 +10,6 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Nivoda credentials + endpoint
 const NIVODA_ENDPOINT =
   process.env.NIVODA_ENDPOINT ||
   "https://intg-customer-staging.nivodaapi.net/api/diamonds";
@@ -18,28 +17,17 @@ const NIVODA_ENDPOINT =
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
 
-// GraphQL query using DiamondQuery + diamonds_by_query
+// Minimal query: DiamondQuery + diamonds_by_query, only ask for id
 const DIAMOND_QUERY = `
   query DiamondsByQuery($offset: Int, $limit: Int, $query: DiamondQuery) {
     diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
-      total
       items {
         id
-        image
-        certificate {
-          carats
-          shape
-          color
-          clarity
-          cut
-          certNumber
-        }
       }
     }
   }
 `;
 
-// Utility to call Nivoda with Basic auth
 async function callNivoda(query, variables) {
   if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
     throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
@@ -73,7 +61,6 @@ async function callNivoda(query, variables) {
   return json.data;
 }
 
-// POST /diamonds – called from Shopify JS
 app.post("/diamonds", async (req, res) => {
   try {
     const { shape, carat, limit } = req.body || {};
@@ -111,14 +98,12 @@ app.post("/diamonds", async (req, res) => {
 
     const items = rawItems.map((d) => ({
       id: d.id,
-      // TODO: map the actual price field once we know its name
       priceCents: null,
-      image: d.image || null,
-      certificate: d.certificate || {}
+      image: null,
+      certificate: {}
     }));
 
-    const total =
-      result && typeof result.total === "number" ? result.total : items.length;
+    const total = items.length;
 
     res.json({ items, total });
   } catch (err) {
@@ -127,7 +112,6 @@ app.post("/diamonds", async (req, res) => {
   }
 });
 
-// POST /checkout – currently just sends them to cart with base variant
 app.post("/checkout", async (req, res) => {
   try {
     const { baseVariantId } = req.body || {};
