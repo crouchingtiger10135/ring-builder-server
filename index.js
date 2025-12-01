@@ -16,9 +16,19 @@ const NIVODA_ENDPOINT =
 
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
-const NIVODA_BEARER_TOKEN = process.env.NIVODA_BEARER_TOKEN || "";
 
-// Minimal query: DiamondQuery + diamonds_by_query, only ask for id
+// --- GraphQL queries ---
+
+const AUTH_QUERY = `
+  query Auth($username: String!, $password: String!) {
+    authenticate {
+      username_and_password(username: $username, password: $password) {
+        token
+      }
+    }
+  }
+`;
+
 const DIAMOND_QUERY = `
   query DiamondsByQuery($offset: Int, $limit: Int, $query: DiamondQuery) {
     diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
@@ -29,26 +39,76 @@ const DIAMOND_QUERY = `
   }
 `;
 
-async function callNivoda(query, variables) {
-  let authHeader = "";
+// --- Token cache (simple, in-memory) ---
 
-  if (NIVODA_BEARER_TOKEN) {
-    authHeader = "Bearer " + NIVODA_BEARER_TOKEN;
-  } else if (NIVODA_USERNAME && NIVODA_PASSWORD) {
-    const basic = Buffer.from(
-      `${NIVODA_USERNAME}:${NIVODA_PASSWORD}`
-    ).toString("base64");
-    authHeader = "Basic " + basic;
-  } else {
-    throw new Error("No Nivoda credentials configured");
+let cachedToken = null;
+let cachedTokenExpiry = 0;
+
+// assume ~6h validity; we'll refresh every 5.5h
+const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000;
+
+async function getNivodaToken() {
+  const now = Date.now();
+  if (cachedToken && now < cachedTokenExpiry) {
+    return cachedToken;
+  }
+
+  if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
+    throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
   }
 
   const resp = await fetch(NIVODA_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({
+      query: AUTH_QUERY,
+      variables: {
+        username: NIVODA_USERNAME,
+        password: NIVODA_PASSWORD
+      }
+    })
+  });
+
+  const json = await resp.json().catch(() => ({}));
+
+  if (!resp.ok || json.errors) {
+    console.error("Nivoda auth error:", resp.status, JSON.stringify(json));
+    throw new Error(
+      `Nivoda auth error: ${resp.status} ${
+        json.errors ? JSON.stringify(json.errors) : ""
+      }`
+    );
+  }
+
+  const token =
+    json &&
+    json.data &&
+    json.data.authenticate &&
+    json.data.authenticate.username_and_password &&
+    json.data.authenticate.username_and_password.token;
+
+  if (!token) {
+    throw new Error("Nivoda auth error: no token in response");
+  }
+
+  cachedToken = token;
+  cachedTokenExpiry = Date.now() + TOKEN_TTL_MS;
+
+  return token;
+}
+
+async function callNivoda(query, variables) {
+  const token = await getNivodaToken();
+
+  const resp = await fetch(NIVODA_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
       Accept: "application/json",
-      Authorization: authHeader
+      Authorization: `Bearer ${token}`
     },
     body: JSON.stringify({ query, variables })
   });
@@ -66,6 +126,8 @@ async function callNivoda(query, variables) {
 
   return json.data;
 }
+
+// --- Routes ---
 
 app.post("/diamonds", async (req, res) => {
   try {
