@@ -16,6 +16,7 @@ const NIVODA_ENDPOINT =
 
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
+const NIVODA_BEARER_TOKEN = process.env.NIVODA_BEARER_TOKEN || "";
 
 // Minimal query: DiamondQuery + diamonds_by_query, only ask for id
 const DIAMOND_QUERY = `
@@ -29,13 +30,18 @@ const DIAMOND_QUERY = `
 `;
 
 async function callNivoda(query, variables) {
-  if (!NIVODA_USERNAME || !NIVODA_PASSWORD) {
-    throw new Error("Missing NIVODA_USERNAME or NIVODA_PASSWORD");
-  }
+  let authHeader = "";
 
-  const authHeader =
-    "Basic " +
-    Buffer.from(`${NIVODA_USERNAME}:${NIVODA_PASSWORD}`).toString("base64");
+  if (NIVODA_BEARER_TOKEN) {
+    authHeader = "Bearer " + NIVODA_BEARER_TOKEN;
+  } else if (NIVODA_USERNAME && NIVODA_PASSWORD) {
+    const basic = Buffer.from(
+      `${NIVODA_USERNAME}:${NIVODA_PASSWORD}`
+    ).toString("base64");
+    authHeader = "Basic " + basic;
+  } else {
+    throw new Error("No Nivoda credentials configured");
+  }
 
   const resp = await fetch(NIVODA_ENDPOINT, {
     method: "POST",
