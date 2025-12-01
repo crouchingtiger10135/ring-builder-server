@@ -17,8 +17,6 @@ const NIVODA_ENDPOINT =
 const NIVODA_USERNAME = process.env.NIVODA_USERNAME || "";
 const NIVODA_PASSWORD = process.env.NIVODA_PASSWORD || "";
 
-// --- GraphQL queries ---
-
 const AUTH_QUERY = `
   query Auth($username: String!, $password: String!) {
     authenticate {
@@ -39,13 +37,9 @@ const DIAMOND_QUERY = `
   }
 `;
 
-// --- Token cache (simple, in-memory) ---
-
 let cachedToken = null;
 let cachedTokenExpiry = 0;
-
-// assume ~6h validity; we'll refresh every 5.5h
-const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000;
+const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000; // ~5.5h
 
 async function getNivodaToken() {
   const now = Date.now();
@@ -127,31 +121,11 @@ async function callNivoda(query, variables) {
   return json.data;
 }
 
-// --- Routes ---
-
 app.post("/diamonds", async (req, res) => {
   try {
-    const { shape, carat, limit } = req.body || {};
+    const { limit } = req.body || {};
 
-    const cMin =
-      carat && typeof carat.min === "number" ? Number(carat.min) : null;
-    const cMax =
-      carat && typeof carat.max === "number" ? Number(carat.max) : null;
-
-    const query = {};
-
-    if (shape) {
-      query.shapes = [shape];
-    }
-
-    if (cMin !== null || cMax !== null) {
-      query.sizes = [
-        {
-          from: cMin,
-          to: cMax
-        }
-      ];
-    }
+    const query = {}; // no filters for now
 
     const variables = {
       offset: 0,
