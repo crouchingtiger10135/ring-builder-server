@@ -32,6 +32,17 @@ const DIAMOND_QUERY = `
     diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
       items {
         id
+        diamond {
+          image
+          certificate {
+            carats
+            shape
+            color
+            clarity
+            cut
+            certNumber
+          }
+        }
       }
     }
   }
@@ -39,7 +50,7 @@ const DIAMOND_QUERY = `
 
 let cachedToken = null;
 let cachedTokenExpiry = 0;
-const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000; // ~5.5h
+const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000;
 
 async function getNivodaToken() {
   const now = Date.now();
@@ -125,7 +136,7 @@ app.post("/diamonds", async (req, res) => {
   try {
     const { limit } = req.body || {};
 
-    const query = {}; // no filters for now
+    const query = {};
 
     const variables = {
       offset: 0,
@@ -138,12 +149,15 @@ app.post("/diamonds", async (req, res) => {
     const result = data && data.diamonds_by_query;
     const rawItems = Array.isArray(result?.items) ? result.items : [];
 
-    const items = rawItems.map((d) => ({
-      id: d.id,
-      priceCents: null,
-      image: null,
-      certificate: {}
-    }));
+    const items = rawItems.map((d) => {
+      const diamond = d.diamond || {};
+      return {
+        id: d.id,
+        priceCents: null,
+        image: diamond.image || null,
+        certificate: diamond.certificate || {}
+      };
+    });
 
     const total = items.length;
 
