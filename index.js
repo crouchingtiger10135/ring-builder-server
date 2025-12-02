@@ -53,6 +53,21 @@ let cachedToken = null;
 let cachedTokenExpiry = 0;
 const TOKEN_TTL_MS = 5.5 * 60 * 60 * 1000;
 
+// map UI labels -> Nivoda shapes
+const SHAPE_MAP = {
+  "Brilliant Round": "ROUND",
+  Asscher: "ASSCHER",
+  Baguette: "BAGUETTE",
+  Cushion: "CUSHION",
+  Emerald: "EMERALD",
+  Heart: "HEART",
+  Marquise: "MARQUISE",
+  Oval: "OVAL",
+  Pear: "PEAR",
+  Princess: "PRINCESS",
+  Radiant: "RADIANT"
+};
+
 async function getNivodaToken() {
   const now = Date.now();
   if (cachedToken && now < cachedTokenExpiry) {
@@ -135,11 +150,30 @@ async function callNivoda(query, variables) {
 
 app.post("/diamonds", async (req, res) => {
   try {
-    const { limit } = req.body || {};
+    const { shape, carat, limit } = req.body || {};
+
+    const cMin =
+      carat && typeof carat.min === "number" ? Number(carat.min) : null;
+    const cMax =
+      carat && typeof carat.max === "number" ? Number(carat.max) : null;
 
     const query = {
       search_on_markup_price: true
     };
+
+    const mappedShape = shape && SHAPE_MAP[shape] ? SHAPE_MAP[shape] : null;
+    if (mappedShape) {
+      query.shapes = [mappedShape];
+    }
+
+    if (cMin !== null || cMax !== null) {
+      query.sizes = [
+        {
+          from: cMin,
+          to: cMax
+        }
+      ];
+    }
 
     const variables = {
       offset: 0,
