@@ -32,6 +32,7 @@ const DIAMOND_QUERY = `
     diamonds_by_query(offset: $offset, limit: $limit, query: $query) {
       items {
         id
+        price
         diamond {
           image
           certificate {
@@ -136,7 +137,9 @@ app.post("/diamonds", async (req, res) => {
   try {
     const { limit } = req.body || {};
 
-    const query = {};
+    const query = {
+      search_on_markup_price: true
+    };
 
     const variables = {
       offset: 0,
@@ -151,11 +154,27 @@ app.post("/diamonds", async (req, res) => {
 
     const items = rawItems.map((d) => {
       const diamond = d.diamond || {};
+      const cert = diamond.certificate || {};
+      const priceRaw = d.price;
+      const priceCents =
+        typeof priceRaw === "number"
+          ? Math.round(priceRaw * 100)
+          : priceRaw
+          ? Math.round(Number(priceRaw) * 100)
+          : null;
+
       return {
         id: d.id,
-        priceCents: null,
+        priceCents,
         image: diamond.image || null,
-        certificate: diamond.certificate || {}
+        certificate: {
+          carats: cert.carats || null,
+          shape: cert.shape || null,
+          color: cert.color || null,
+          clarity: cert.clarity || null,
+          cut: cert.cut || null,
+          certNumber: cert.certNumber || null
+        }
       };
     });
 
