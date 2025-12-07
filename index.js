@@ -10,6 +10,10 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// ---------------------
+// Nivoda config
+---------------------- //
+
 const NIVODA_ENDPOINT =
   process.env.NIVODA_ENDPOINT ||
   "https://intg-customer-staging.nivodaapi.net/api/diamonds";
@@ -148,6 +152,104 @@ async function callNivoda(query, variables) {
   return json.data;
 }
 
+// ---------------------
+// Shopify config
+---------------------- //
+
+const SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN; // e.g. "simon-curwood-jewellers.myshopify.com"
+const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN; // Admin API access token
+const DIAMOND_PRODUCT_ID = process.env.DIAMOND_PRODUCT_ID; // numeric ID of hidden "Custom Nivoda Diamond" product
+
+if (!SHOP_DOMAIN || !ADMIN_TOKEN) {
+  console.warn(
+    "[WARNING] SHOPIFY_SHOP_DOMAIN or SHOPIFY_ADMIN_TOKEN not set. /checkout will not work."
+  );
+}
+
+async function shopifyRequest(path, method = "GET", body) absolutely {
+  const url = `https://${SHOP_DOMAIN}/admin/api/2024-04${path}`;
+  const resp = await fetch(url, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ADMIN_TOKEN
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    console.error("Shopify API error:", resp.status, text);
+    throw new Error(`Shopify ${method} ${path} failed: ${resp.status} ${text}`);
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
+ * Create a one-off diamond variant on the hidden diamond product.
+ * Returns numeric variant ID.
+ */
+async function createDiamondVariant(diamond, diamondPriceCents) {
+  if (!DIAMOND_PRODUCT_ID) {
+    throw new Error("Missing DIAMOND_PRODUCT_ID env var");
+  }
+
+  const cert = (diamond && diamond.certificate) || {};
+
+  const titleBits = [];
+  if (cert.carats) titleBits.push(`${cert.carats}ct`);
+  if (cert.shape) titleBits.push(cert.shape);
+  const title = titleBits.length ? `Diamond ${titleBits.join(" ")}` : "Diamond";
+
+  const sku = cert.certNumber || (diamond && diamond.id && `NIV-${diamond.id}`);
+
+  const variantPayload = {
+    variant: {
+      product_id: Number(DIAMOND_PRODUCT_ID),
+      title,
+      price: (Number(diamondPriceCents || 0) / 100).toFixed(2),
+      sku: sku || undefined,
+      inventory_management: "not_managed",
+      taxable: true
+    }
+  };
+
+  const resp = await shopifyRequest("/variants.json", "POST", variantPayload);
+  if (!resp || !resp.variant || !resp.variant.id) {
+    throw new Error("Failed to create diamond variant");
+  }
+
+  console.log("[RingBuilder] Created diamond variant", resp.variant.id);
+  return resp.variant.id;
+}
+
+/**
+ * Create a checkout with the provided line items.
+ * Returns checkout web_url.
+ */
+async function createCheckout(lineItems) {
+  const resp = await shopifyRequest("/checkouts.json", "POST", {
+    checkout: { line_items: lineItems }
+  });
+
+  const url = resp && resp.checkout && resp.checkout.web_url;
+  if (!url) {
+    throw new Error("Shopify checkout response missing web_url");
+  }
+
+  console.log("[RingBuilder] Created checkout", url);
+  return url;
+}
+
+// ---------------------
+// Nivoda diamonds endpoint
+---------------------- //
+
 app.post("/diamonds", async (req, res) => {
   try {
     const { shape, carat, limit } = req.body || {};
@@ -183,7 +285,7 @@ app.post("/diamonds", async (req, res) => {
 
     const data = await callNivoda(DIAMOND_QUERY, variables);
 
-    const result = data && data.diamonds_by_query;
+    const result = data && data.diagnostics_by_query;
     const rawItems = Array.isArray(result?.items) ? result.items : [];
 
     const items = rawItems.map((d) => {
@@ -221,22 +323,70 @@ app.post("/diamonds", async (req, res) => {
   }
 });
 
+
+// ---------------------
+// NEW checkout endpoint
+---------------------- //
+
 app.post("/checkout", async (req, res) => {
   try {
-    const { baseVariantId } = req.body || {};
+    const {
+      ringVariantId,
+      quantity = 1,
+      ringConfig,
+      diamond,
+      diamondPriceCents = 0,
+      lineItemProperties = {}
+    } = req.body || {};
 
-    if (!baseVariantId) {
-      return res.status(400).json({ error: "Missing baseVariantId" });
+    if (!ringVariantId) {
+      return res.status(400).json({ error: "Missing ringVariantId" });
     }
 
-    const url = `/cart/${baseVariantId}:1`;
+    if (!SHOP_DOMAIN || !ADMIN_TOKEN) {
+      console.error(
+        "[RingBuilder] Shopify env vars not set, cannot create checkout"
+      );
+      return res.status(500).json({ error: "Shopify not configured" });
+    }
 
-    res.json({ url });
+    // Build line items starting with the ring
+    const lineItems = [
+      {
+        variant_id: Number(ringVariantId),
+        quantity: Number(quantity) || 1,
+        properties: lineItemProperties
+      }
+    ];
+
+    if (diamond && diamondPriceCents > 0) {
+      const diamondVariantId = await createDiamondVariant(
+        diamond,
+        diamondPriceCents
+      );
+
+      lineItems.push({
+        variant_id: Number(diamondVariantId),
+        quantity: 1,
+        properties: {
+          Diamond: JSON.stringify(diamond),
+          "Diamond price (cents)": String(diamondPriceCents)
+        }
+      });
+    }
+
+    const checkoutUrl = await createCheckout(lineItems);
+
+    return res.json({ checkoutUrl });
   } catch (err) {
-    console.error("Error in /checkout:", err.message);
+    console.error("Error in /checkout:", err.message, err.stack);
     res.status(500).json({ error: "Checkout error" });
   }
 });
+
+// ---------------------
+// Healthcheck
+---------------------- //
 
 app.get("/", (req, res) => {
   res.send("Plattar Ring Builder server is running.");
